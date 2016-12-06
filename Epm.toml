@@ -1,0 +1,10 @@
+[project]
+name = "require"
+version = "0.1.0"
+authors = ["Dirk Zimoch <dirk.zimoch@psi.ch>", "Niklas Claesson <nicke.claesson@gmail.com>"]
+
+[runtime]
+epics-base = ">=3.14"
+
+[dependencies]
+

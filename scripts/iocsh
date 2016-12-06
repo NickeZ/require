@@ -1,0 +1,384 @@
+#!/bin/bash
+#
+# EPICS Environment Manager
+# Copyright (C) 2015 Dirk Zimoch
+# Copyright (C) 2015 Cosylab
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+rp() {
+  ( realpath $1 || readlink -f $1 || readlink $1 || echo $1 ) 2>/dev/null
+}
+
+help () {
+    {
+    echo "Usage: iocsh [base-version] [option] [file [file] ...]"
+    echo "Options:"
+    echo "  -3.xx.yy         Set EPICS base version."
+    echo
+    echo "  -d, --debug      Run IOC with gdb."
+    echo "  -dv              Run IOC with valgrind."
+    echo "  -dp              Run IOC with perf record."
+    echo "  -32              Force 32 bit version (on 64 bit systems)."
+    echo "  -?, -h, --help   Show this page and exit."
+    echo "  -v, --version    Show version and exit."
+    echo "  -c               The next string is executed as a command by the EPICS shell."
+    echo "  -s               The next string is a sequencer program (and arguments), run with 'seq'."
+    echo "                   This forces an 'iocInit' before running the program."
+    echo "  -r               The next string is a module (and version), loaded via 'require'."
+    echo "  -n               The next string is the IOC name (used for prompt)."
+    echo "                   Default: dirname if parent dir is \"ioc\" otherwise hostname."
+    echo "  file             File to load according to file type."
+    echo
+    echo "Supported filetypes:"
+    echo "  *.db, *.dbt, *.template"
+    echo "                   Loaded via 'dbLoadRecords'."
+    echo "                   After the filename, you can specify substitutions like MACRO=value."
+    echo "  *.subs, *.subst  Loaded via 'dbLoadTemplate'."
+    echo "  *.dbd            Loaded via 'dbLoadDatabase'."
+    echo "  *.so             Loaded via 'ld' or 'dlload' (3.14.12 or higer)."
+    echo
+    echo "If a file is preceeded with an at sign (@file), more arguments are"
+    echo "read from that file."
+    echo "All other files are executed as startup scripts by the EPICS shell."
+    echo
+    echo "Examples:"
+    echo "  iocsh st.cmd"
+    echo "  iocsh my_database.db st.cmd"
+    echo "  iocsh -r my_module,version -c 'initModule()'"
+    echo "  iocsh -3.15.4 -dp st.cmd"
+    } >&2
+    exit
+}
+
+case $1 in
+    ( -h | "-?" | -help | --help )
+        help
+        ;;
+    ( -v | -ver | --ver | -version | --version )
+        version
+        ;;
+    ( -3.* )
+        unset EPICS_BASE
+        EPICSVERSION=${1#-}
+        shift
+    ;;
+esac
+
+
+# Find EPICS base in the following order
+# 1. Use $EPICS_BASE if set.
+# 2. Abort if $EPICS_BASES_PATH is not given or can't be found.
+# 3. Use $EPICS_BASES_PATH/base-$EPICSVERSION if $EPICSVERSION is set. Abort otherwise.
+# 4. Use $EPICS_BASES_PATH/base if it exists.
+# 5. Use latest 'base' in $EPICS_BASES_PATH.
+
+if [ -z "$EPICS_BASE" ] ; then
+    if [ -z "$EPICS_BASES_PATH" ] ; then
+        for install_location in /opt/epics /opt/epics/bases /usr/local/epics ; do
+			if [ -n "$(find . -wholename "$install_location/base-*" 2>/dev/null)" ] ; then
+				EPICS_BASES_PATH=$install_location
+				break
+            fi
+		done
+		if [ -z "$EPICS_BASES_PATH" ] ; then
+			echo "Cannot find EPICS installation directory." >&2
+			echo "Try setting EPICS_BASE environment variable to full path" >&2
+			exit 1
+		fi
+    fi
+    if [ -n "$EPICSVERSION" ] ; then
+        EPICS_BASE=$EPICS_BASES_PATH/base-$EPICSVERSION
+        if [ ! -d $EPICS_BASE ] ; then
+            echo "Cannot find $EPICS_BASES_PATH/base-$EPICSVERSION directory." >&2
+            exit 1
+        fi
+    else    
+        EPICS_BASE=$(rp $EPICS/base)
+        if [ ! -d $EPICS_BASE ] ; then
+			EPICS_BASE=$EPICS_BASES_PATH/$(ls ${EPICS_BASES_PATH} | grep base | sort -t. -k1,1 -k2,2 -k3,3 -k4,4 -n -r | head -1);
+        fi
+    fi
+fi
+export EPICS_BASE
+if [ ! -d $EPICS_BASE ] ; then
+    echo "Cannot find EPICS_BASE directory." >&2
+    echo "Try setting EPICS_BASE environment variable to full path" >&2
+    exit 1
+fi
+
+EPICSVERSION=$(basename $(rp $EPICS_BASE))
+EPICSVERSION=${EPICSVERSION#*base-}
+
+if [ "${EPICSVERSION#3.14.}" = "$EPICSVERSION" -a "${EPICSVERSION#3.15.}" = "$EPICSVERSION" ]
+then
+    echo "Cannot find any EPICS 3.14 or 3.15 version" >&2
+    echo "Try setting EPICS_BASE environment variable to full path" >&2
+    exit 1
+fi
+export EPICSVERSION
+BASEMINOR=${EPICSVERSION#3.}
+BASEPATCH=${BASEMINOR#*.}
+BASEPATCH=${BASEPATCH%%.*}
+BASEMINOR=${BASEMINOR%%.*}
+
+# IOC name derives from hostname
+# (trailing possible '\r' under cygwin)
+IOC=$(hostname|tr -d '\r')
+# trailing possible domain name
+IOC=${IOC%%.*}
+# or get IOC name from start directory following PSI convention
+if [ $(basename $(dirname $PWD)) = "ioc" ]
+then
+    IOC=$(basename $PWD)
+fi
+export IOC
+
+if [ -z "$EPICS_HOST_ARCH" ]
+then
+    echo "EPICS_HOST_ARCH is not set"
+    EPICS_HOST_ARCH=$(basename $(dirname $(rp $(which caRepeater))))
+    if [ -n "$EPICS_HOST_ARCH" ]
+    then
+        echo "Guessing $EPICS_HOST_ARCH"
+    else
+        exit 1
+    fi
+fi
+
+case $1 in
+    ( -32 )
+        EPICS_HOST_ARCH=${EPICS_HOST_ARCH%_64}
+        shift
+    ;;
+esac
+
+# Check for 64 bit versions, default to 32 bit
+if [ ! -d $EPICS_BASE/lib/${EPICS_HOST_ARCH} -a -d $EPICS_BASE/lib/${EPICS_HOST_ARCH%_64} ]
+then
+    echo "No 64 bit EPICS installation found. Defaulting to 32 bit"
+    EPICS_HOST_ARCH=${EPICS_HOST_ARCH%_64}
+fi
+
+# setup search path for require
+ODIR=O.${EPICSVERSION}_$EPICS_HOST_ARCH
+export ODIR
+if [ -z "$EPICS_MODULE_INCLUDE_PATH" ] ; then
+	EPICS_MODULE_INCLUDE_PATH=.
+fi
+if [[ -d modules ]] ; then
+    for module in $(ls modules) ; do
+        EPICS_MODULE_INCLUDE_PATH+=:modules/$module
+    done
+fi
+
+# convert for win32-x86 arch
+if [ ${EPICS_HOST_ARCH#win32-} != $EPICS_HOST_ARCH ]
+then 
+    EPICS_MODULE_INCLUDE_PATH=$(cygpath -wp $EPICS_MODULE_INCLUDE_PATH)
+    DBD=$(cygpath -wp $DBD)
+fi
+if [ ${EPICS_HOST_ARCH#cygwin-} != $EPICS_HOST_ARCH ]
+then 
+    DBD=$(cygpath -wp $DBD)
+fi
+
+for dir in /usr/lib64 /usr/lib /lib64 /lib ; do
+    if [ -d $dir ] ; then
+        EPICS_MODULE_INCLUDE_PATH+=":$dir"
+    fi
+done
+
+export EPICS_MODULE_INCLUDE_PATH
+
+subst () {
+    subst=""
+    while [ "$#" -gt 1 ]
+    do
+        case $2 in 
+            ( *=* )
+                subst="$subst,$2"; shift
+                ;;
+            ( * )
+                break
+                ;;
+        esac
+    done
+    echo ${subst#,}
+}
+
+loadFiles () {
+while [ "$#" -gt 0 ]
+do
+  file=$1
+  case $file in
+    ( -h | "-?" | -help | --help )
+        help
+        ;;
+    ( -v | -ver | --ver | -version | --version )
+        version
+        ;;
+    ( -d | -dg | --debug )
+        DEBUG=gdb
+        ;;
+    ( -dv )
+        DEBUG=valgrind
+        ;;
+    ( -dp )
+        DEBUG=perf
+        ;;
+    ( @* )              
+        loadFiles $(cat ${file#@})
+        ;;
+    ( *.db | *.template)
+        subst=""
+        while [ "$#" -gt 1 ]
+        do
+            case $2 in 
+                ( *=* )
+                    subst="$subst,$2"; shift
+                    ;;
+                ( * )
+                    break
+                    ;;
+            esac
+        done
+        echo "dbLoadRecords \"$file\",\"${subst#,}\""
+        ;;
+    ( *.subs | *.subst | *.substitutions )
+        echo "dbLoadTemplate \"$file\""
+        ;;
+    ( *.dbd )
+        # some dbd files must be loaded before main to take effect
+        echo "dbLoadDatabase \"$file\",\"$DBD\""
+        ;;
+    ( *.so )
+        if [ $BASEMINOR -ge 15 -o $BASEPATCH -ge 12 ]
+        then
+            echo "dlload \"$file\""
+        else
+            echo "ld \"$file\""
+        fi
+        ;;
+    ( -c )
+        shift
+        case $1 in
+        ( seq* )
+            if [ "$init" != NO ]
+            then
+                echo "iocInit"
+                init=NO
+            fi
+            ;;
+        ( iocInit )
+            init=NO
+            ;;
+        esac
+        echo $1
+        ;;
+    ( -s )
+        shift
+        if [ "$init" != NO ]
+        then
+            echo "iocInit"
+            init=NO
+        fi
+        echo "seq $1"
+        ;;
+    ( -r )               
+        shift
+        echo "require $1"
+        ;;
+    ( -n )
+        shift
+        IOC="$1"
+        ;;
+    ( -3.* )
+        echo "Version $file must be first argument" >&2
+        exit 1
+        ;;
+    ( -32 )
+        echo "-32 option must come before all others (except -3.xx.yy)" >&2
+        exit 1
+        ;;
+    ( -* )
+        {
+        echo "unknown option $1"
+        echo "try: $(basename $0) --help"
+        } >&2
+        exit 1
+       ;;
+    ( * )                
+        echo "< \"$file\""
+        if grep -q iocInit $file; then init=NO; fi
+        ;;
+  esac
+  shift
+done
+}
+
+startup=/tmp/iocsh.startup.$$
+trap "rm -f $startup" EXIT TERM KILL
+{
+echo "#date=\"$(date)\""
+echo "#user=\"${USER:-$(whoami)}\""
+for var in PWD EPICSVERSION EPICS_HOST_ARCH SHELLBOX EPICS_CA_ADDR_LIST EPICS_MODULE_INCLUDE_PATH
+do
+    echo "#$var=\"${!var}\""
+done
+EXE=$EPICS_BASE/bin/$EPICS_HOST_ARCH/softIoc
+ARGS="-D $EPICS_BASE/dbd/softIoc.dbd"
+# load "require" command
+IOCSHDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+REQUIREDIR=${IOCSHDIR%/*/*/*}
+REQUIRE=environment
+LIBPREFIX=lib
+LIBPOSTFIX=.so
+LIBFILE=${REQUIREDIR}/${EPICSVERSION}/lib/${EPICS_HOST_ARCH}/${LIBPREFIX}${REQUIRE}${LIBPOSTFIX}
+DBDFILE=${REQUIREDIR}/${EPICSVERSION}/dbd/${REQUIRE}.dbd
+if [ ! -f $LIBFILE ]
+then
+    echo "ERROR: Library ${LIBFILE} not found. Command 'require' is not available." >&2
+else
+    echo "dlload         ${LIBFILE}"
+    echo "dbLoadDatabase ${DBDFILE}"
+    echo "${REQUIRE%-*}_registerRecordDeviceDriver"
+fi
+loadFiles "$@"
+if [ "$init" != NO ]
+then
+    echo "iocInit"
+fi
+
+echo 'epicsEnvSet IOCSH_PS1,"${IOC}> "'
+} > $startup
+
+# conver#t startup script file name for win32-x86
+if [ ${EPICS_HOST_ARCH#win32-} != $EPICS_HOST_ARCH ]
+then
+    startup=`cygpath -w $startup`
+fi
+
+PATH=$EPICS_BASE/bin/$EPICS_HOST_ARCH:$PATH
+
+echo $EXE $ARGS $startup
+if [ -z "$DEBUG" ] ; then
+    eval "$LOADER $EXE" $ARGS "$startup" 2>&1
+elif [ "$DEBUG" = "gdb" ] ; then
+    eval gdb --eval-command run --args $LOADER $EXE $ARGS $startup
+elif [ "$DEBUG" = "perf" ] ; then
+    eval "perf record $LOADER $EXE" $ARGS "$startup"
+else
+    eval "valgrind --leak-check=full $LOADER $EXE" $ARGS "$startup"
+fi

@@ -1,0 +1,47 @@
+# EPICS versions to build by default
+DEFAULT_EPICS_VERSIONS = 3.14.12.5 3.15.4
+
+# OS Classes to build by defult.
+BUILDCLASSES := Linux
+
+# OS Classes to install headers for by default.
+OS_CLASSES_SUFFIXES := default Linux vxWorks RTEMS
+EPICSVERSIONS_SUFFIXES := 3 3.14 3.14.12.5 3.15 3.15.2 3.15.4
+
+# Location of sequencer module
+SNCSEQ = ${EPICS_MODULES_PATH}/seq/2.1.10
+
+# String that will be removed from folder name to derive project name.
+PROJECT_PREFIX = m-epics-
+
+# Prefix that is matched against when installing a semver valid version.
+TAG_PREFIX = v
+
+# Temporary directory to assemble the EPICS module.
+BUILD_DIR = builddir
+
+# Pattern to ignore when automagically finding sources in a module. The pattern
+# will be passed to 'find' as an agrument to -path.
+IGNORE_PATTERN = ./target*
+
+# File extensions. These are used when automatically finding sources.
+TEMPLATE_EXT      = template tmpl db
+SUBSTITUTIONS_EXT = substitutions subs
+PROTOCOL_EXT      = protocol proto
+SOURCE_EXT        = c C cc cpp st stt gt
+STARTUP_EXT       = cmd
+OPI_EXT           = opi
+
+# File extension for expanded substitutions, only one (1) extension allowed.
+SUBSTITUTIONS_EXP_EXT = db
+
+# Set PYTHON executable, default is 'python'.
+# It is possible to set different paths to the python interpreter based on the
+# EPICS_HOST_ARCH variable. For 64 bit x86 architectures it will first try the
+# 32 bit version.
+# For example, this applies to SL6 32 and 64 bit:
+#   PYTHON_SL6-x86 = scl enable python27 -- python
+# Whereas this applies only to SL6 64 bit:
+#   PYTHON_SL6-x86_64 = python
+#PYTHON_SL6-x86_64 = /opt/python/python-2.7.5/bin/python
+PYTHON_SL6-x86 = scl enable python27 -- python

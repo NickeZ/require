@@ -1,0 +1,139 @@
+#/bin/bash
+#
+# EPICS Environment Manager
+# Copyright (C) 2015 Cosylab
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Author: Niklas Claesson <niklas.claesson@esss.se>
+#
+# Helper script for building autotools projects as EPICS modules.
+# First argument should be a file that can be sourced and contains the following variables:
+# * TARBALL (URL to file to download)
+# * SRCPATH (PATH to project after unpacking)
+
+# Exit on fail, fail on every command in pipe
+set -e
+set -o pipefail
+
+die () { echo "$@" 1>&2 ; exit -1; }
+
+if [[ "$#" -lt 1 || $1 == "help" || $1 == "-h" || $1 == "--help" ]] ; then
+	echo "Usage:"
+	echo ""
+	echo "$0 CONFIG_FILE [Make-args]"
+	echo ""
+	echo "  CONFIG_FILE  - sourceable file with variables"
+	echo "  Make-args    - arguments to pass onto Make"
+	exit 0
+fi
+
+# Check that dependencies are installed
+which wget 2>&1 > /dev/null || die "wget is not installed"
+which tar 2>&1 > /dev/null || die "tar is not installed"
+
+if [[ "$1" != "/*" ]] ; then
+	[[ -f "$PWD/$1" ]] && source "$PWD/$1" || die "File not found: $1"
+else
+	[[ -f "$1" ]] && source "$1" || die "File not found: $1"
+fi
+
+# Remove the CONFIG_FILE argument
+shift
+
+# Get the architectures that should be built
+CROSS_COMPILER_TARGET_ARCHS=$(grep -E "^CROSS_COMPILER_TARGET_ARCHS" ${EPICS_BASE}/configure/os/CONFIG_SITE.${EPICS_HOST_ARCH}.Common | sed -r 's/CROSS_COMPILER_TARGET_ARCHS\s*\+?=\s*([^\s]*)/\1/')
+CROSS_COMPILER_TARGET_ARCHS+=" ${EPICS_HOST_ARCH}"
+
+# Set the number of jobs to build autotools project with
+JOBS=5
+
+# SRCPATH can be committed to repository and then TARBALL may be empty.
+# Only fail if TARBALL is provided and not recognized.
+if [ "${TARBALL##*\.}" == "bz2" ] ; then
+	TAR_FLAGS=xj
+elif [ "${TARBALL##*\.}" == "gz" ] ; then
+	TAR_FLAGS=xz
+elif [ "${TARBALL##*\.}" == "tgz" ] ; then
+	TAR_FLAGS=xz
+elif [ "${TARBALL##*\.}" == "xz" ] ; then
+	TAR_FLAGS=xJ
+elif [ -n "${TARBALL}" ] ; then
+	echo Unknown file format
+	exit -1
+fi
+
+# Download and unpack tarball
+if [ ! -d ${SRCPATH} ] ; then
+	wget ${TARBALL} -O- | tar ${TAR_FLAGS}
+fi
+
+# Source the cross compilation tools and build the autotool project for every architecture.
+for T_A in $CROSS_COMPILER_TARGET_ARCHS ; do
+	dir=O.$T_A
+
+	if [ "$T_A" == "eldk52-e500v2" ] ; then
+		ENV_FILE=/opt/eldk-5.2/powerpc-e500v2/environment-setup-ppce500v2-linux-gnuspe
+		PREFIX=/opt/eldk-5.2/powerpc-e500v2/sysroots/ppce500v2-linux-gnuspe/usr
+	elif [ "$T_A" == "eldk553-e500v2" ] ; then
+		ENV_FILE=/opt/eldk-5.5.3/powerpc-e500v2/environment-setup-ppce500v2-linux-gnuspe
+		PREFIX=/opt/eldk-5.5.3/powerpc-e500v2/sysroots/ppce500v2-linux-gnuspe/usr
+	elif [ "$T_A" == "eldk56-e500v2" ] ; then
+		ENV_FILE=/opt/eldk-5.6/ifc1210/environment-setup-ppce500v2-linux-gnuspe
+		PREFIX=/opt/eldk-5.6/ifc1210/sysroots/ppce500v2-linux-gnuspe/usr
+		if [ -n "${KERNEL_SRC}" ] ; then
+			PACKAGE_CONFIGURE_FLAGS="${PACKAGE_CONFIGURE_FLAGS} --with-linux-dir=/opt/eldk-5.6/ifc1210/sysroots/ppce500v2-linux-gnuspe/usr/src/kernel/"
+		fi
+	elif [ "$T_A" == "eldk58-e500v2" ] ; then
+		ENV_FILE=/opt/eldk-5.8/ifc1210/environment-setup-ppce500v2-linux-gnuspe
+		PREFIX=/opt/eldk-5.8/ifc1210/sysroots/ppce500v2-linux-gnuspe/usr
+		if [ -n "${KERNEL_SRC}" ] ; then
+			PACKAGE_CONFIGURE_FLAGS="${PACKAGE_CONFIGURE_FLAGS} --with-linux-dir=/opt/eldk-5.8/ifc1210/sysroots/ppce500v2-linux-gnuspe/usr/src/kernel/"
+		fi
+	elif [[ "$T_A" == *x86_64 ]] ; then
+		ENV_FILE=""
+		PREFIX=/usr/local
+	else
+		echo "Unrecognized platform $T_A"
+		exit -1
+	fi
+
+	/bin/bash -xeo pipefail -c "
+	# CLEANUP
+	pushd ${SRCPATH}
+	if [ -f Makefile ] ; then
+		make distclean
+	fi
+	if [ ! -f configure ] ; then
+		autoreconf
+	fi
+	popd
+
+	# COMPILE
+	mkdir -p ${dir}
+	pushd ${dir}
+
+	test -f \"${ENV_FILE}\" && source ${ENV_FILE}
+	../${SRCPATH}/configure --prefix=${PREFIX} \${CONFIGURE_FLAGS} ${PACKAGE_CONFIGURE_FLAGS}
+	make -j${JOBS}
+	popd"
+done
+
+# Build the EPICS module
+make $@
+
+if [ "$1" = "clean" ] ; then
+	echo "Removing O.* .."
+	rm -fr O.*
+fi

@@ -1,0 +1,2 @@
+registrar(requireRegister)
+variable(requireDebug,int)

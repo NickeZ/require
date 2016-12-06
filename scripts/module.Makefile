@@ -181,7 +181,7 @@ USERMAKEFILE:=$(lastword $(filter-out $(lastword ${MAKEFILE_LIST}), ${MAKEFILE_L
 .PHONY := install uninstall build debug debug-out list list-verbose
 .PRECIOUS := *.d
 
-include ${MAKEHOME}/CONFIG
+#include ${MAKEHOME}/CONFIG
 
 rwildcard=$(shell find . -name "$1" -not -path "./${BUILD_DIR}*" -not -path "${IGNORE_PATTERN}" )
 
@@ -211,14 +211,14 @@ endif
 
 # Check that all correct environment variables are set. If target is version or help we don't need the variables.
 ifeq ($(if $(filter version help,${MAKECMDGOALS}), ok),)
-    $(foreach env,EPICS_MODULES_PATH EPICS_BASES_PATH EPICS_HOST_ARCH,$(if $(and $(findstring environment,$(origin ${env})),${${env}}),,$(error ${env} is empty or not defined in environment)))
+    $(foreach env,EPICS_BASE EPICS_HOST_ARCH,$(if $(and $(findstring environment,$(origin ${env})),${${env}}),,$(error ${env} is empty or not defined in environment)))
 endif
 
 # some generated file names
-VERSIONFILE   = $(if $(strip ${SRCS}),${PRJ}_Version${LIBVERSION}.c)
-REGISTRYFILE  = ${PRJ}_registerRecordDeviceDriver.cpp
-SUBFUNCFILE   = $(if $(if $(strip $(filter $(foreach ext,${SOURCE_EXT},%.${ext}), $(SRCS))),$(shell if grep epicsRegisterFunction $(addprefix ../../,$(filter $(foreach ext,${SOURCE_EXT},%.${ext}), $(SRCS))) ; then echo YES ; fi)),../O.${EPICSVERSION}_Common/${PRJ}_subRecordFunctions.dbd)
-BUILD_DIR    ?= builddir
+VERSIONFILE   = $(if $(strip ${SRCS}),${PROJECT}_Version${LIBVERSION}.c)
+REGISTRYFILE  = ${PROJECT}_registerRecordDeviceDriver.cpp
+SUBFUNCFILE   = $(if $(if $(strip $(filter $(foreach ext,${SOURCE_EXT},%.${ext}), $(SRCS))),$(shell if grep epicsRegisterFunction $(addprefix ${TOP_PATH}/,$(filter $(foreach ext,${SOURCE_EXT},%.${ext}), $(SRCS))) ; then echo YES ; fi)),../O.${EPICSVERSION}_Common/${PROJECT}_subRecordFunctions.dbd)
+BUILD_DIR    ?= target/debug
 BUILD_PATH    = ${BUILD_DIR}
 
 # call with 'make debug V="VARIABLE1 VARIABLE2"' to read out VARIABLE1 and 2.
@@ -227,176 +227,10 @@ debug-out:
 	  $(info $v = ${$v}))
 
 
-ifndef EPICSVERSION
-###############################################
-# First run
-# Nothing defined.
-
-INSTALLED_EPICS_VERSIONS := $(patsubst ${EPICS_BASES_PATH}/base-%,%,$(wildcard ${EPICS_BASES_PATH}/base-*[0-9]))
-INSTALLED_EPICS_VERSIONS_MAJMIN := $(shell echo "${INSTALLED_EPICS_VERSIONS}" | sed -r 's/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)[^ ]*/\1.\2/g')
-EPICS_VERSIONS            = $(filter-out ${EXCLUDE_VERSIONS:=%},${DEFAULT_EPICS_VERSIONS})
-MISSING_EPICS_VERSIONS    = $(filter-out ${BUILD_EPICS_VERSIONS},${EPICS_VERSIONS})
-BUILD_EPICS_VERSIONS      = $(filter ${INSTALLED_EPICS_VERSIONS},${EPICS_VERSIONS})
-LIBVERSION := $(shell ${PYTHON} ${MAKEHOME}/get_version.py $(if ${TAG_PREFIX},--prefix=${TAG_PREFIX}) $(if ${RELEASE},--${RELEASE}))
-# If PROJECT isn't defined, derive it from project directory.
-PRJDIR := $(patsubst ${PROJECT_PREFIX}%,%,$(notdir $(shell pwd)))
-PRJ = $(if ${PROJECT},${PROJECT},${PRJDIR})
-
-EXCLUDE_VERSIONS += $(foreach v,${INSTALLED_EPICS_VERSIONS_MAJMIN} ${INSTALLED_EPICS_VERSIONS},\
-		      $(shell ${PYTHON} ${MAKEHOME}/check_excludes.py ${CHECKEXCLUDESDEBUG} --epics-base $v --version ${LIBVERSION} $(foreach c,${EXCLUDE_VERSION_$v},--condition '$c')))
-
-$(foreach v,${INSTALLED_EPICS_VERSIONS_MAJMIN},\
-  $(eval EPICS_VERSIONS_$v = $(filter $v.%,${BUILD_EPICS_VERSIONS})))
-
-MKFLAGS = -f ${USERMAKEFILE} LIBVERSION=${LIBVERSION}
-FOR_EACH_EPICS_VERSION = ${QUIET}for VERSION in ${BUILD_EPICS_VERSIONS}; do ${MAKE} ${MKFLAGS} EPICSVERSION=$$VERSION $@ || exit; done
-
-INSTALLED_MODULE_VERSIONS = $(shell ls ${EPICS_MODULES_PATH}/${PRJ} 2>/dev/null | sed -r 's/${PRJ}-(\w+)/\1/' 2>/dev/null)
-
-V = INSTALLED_EPICS_VERSIONS BUILD_EPICS_VERSIONS MISSING_EPICS_VERSIONS $(foreach v,3.14 3.15, EPICS_VERSIONS_$v) BUILDCLASSES
-
-define EPICSVERSION_template
-.PHONY: $${BUILD_PATH}/$1
-
-$${BUILD_PATH}/$1:
-	$${MKDIR} -p $$@
-	$${MAKE} $${MKFLAGS} EPICSVERSION=$1 build
-endef
-
-$(foreach ver,${BUILD_EPICS_VERSIONS},$(eval $(call EPICSVERSION_template,${ver})))
-
-# Loop over all EPICS versions for second run.
-build: | $(foreach ver,${BUILD_EPICS_VERSIONS},${BUILD_PATH}/${ver})
-
-# Handle cases where user requests build or debug of one specific version.
-# make <action>.<version>
-${INSTALLED_EPICS_VERSIONS:%=build.%}:
-	${MAKE} ${MKFLAGS} EPICSVERSION=${@:build.%=%} build
-
-${INSTALLED_EPICS_VERSIONS:%=debug.%}:
-	${MAKE} ${MKFLAGS} EPICSVERSION=${@:debug.%=%} debug
-
-install: build
-ifeq (${LIBVERSION},) # Do not install without version.
-	$(error "Can't $@ if LIBVERSION is empty.")
-endif
-	${PYTHON} ${MAKEHOME}/module_manager.py --assumeyes --builddir='${BUILD_PATH}' install '${PRJ}' '${LIBVERSION}'
-
-install.%: build.%
-ifeq (${LIBVERSION},) # Do not install without version.
-	$(error "Can't $@ if LIBVERSION is empty.")
-endif
-	${PYTHON} ${MAKEHOME}/module_manager.py --assumeyes --builddir='${BUILD_PATH}' install '${PRJ}' '${LIBVERSION}'
-
-clean:
-	${QUIET}echo "Removing ${BUILD_PATH}/O.*"
-	${QUIET}if [[ "${BUILD_PATH}" != *"/"* && ! "${BUILD_PATH}" =~ [\.]+ ]] ; then $(RMDIR) ${BUILD_PATH}/O.* ; fi
-
-clean.3.%:
-	${QUIET}echo "Removing ${BUILD_PATH}/O.3.%"
-	${QUIET}if [[ "${BUILD_PATH}" != *"/"* && ! "${BUILD_PATH}" =~ [\.]+ ]] ; then $(RMDIR) ${BUILD_PATH}/O.${@:clean.%=%}* ; fi
-
-distclean:
-	${QUIET}echo "Removing ${BUILD_PATH}"
-	${QUIET}if [[ "${BUILD_PATH}" != *"/"* && ! "${BUILD_PATH}" =~ [\.]+ ]] ; then $(RMDIR) ${BUILD_PATH} ; fi
-
-help:
-	${QUIET}echo "usage:"
-	${QUIET}for target in '' build build.'<EPICS version>' \
-	install install.'<EPICS version>' \
-	uninstall 'uninstall.<Module version>' \
-	list list-verbose clean help version; \
-	do echo "  make $$target"; \
-	done
-	${QUIET}echo "Makefile variables: (defaults)"
-	${QUIET}echo "  EPICS_VERSIONS   (${DEFAULT_EPICS_VERSIONS})"
-	${QUIET}echo "  PROJECT          (${PRJDIR}) [from current directory name]"
-	${QUIET}echo "  SOURCES          ($(foreach ext,${SOURCE_EXT},*.${ext}))"
-	${QUIET}echo "  HEADERS          () [only those to install]"
-	${QUIET}echo "  TEMPLATES        ($(foreach ext,$(sort ${TEMPLATE_EXT} ${SUBSTITUTIONS_EXP_EXT}),*.${ext}))"
-	${QUIET}echo "  SUBSTITUTIONS    ($(foreach ext,${SUBSTITUTIONS_EXT},*.${ext}))"
-	${QUIET}echo "  STARTUPS         ($(foreach ext,${STARTUP_EXT},*.${ext}))"
-	${QUIET}echo "  MISCS            ($(foreach ext,${PROTOCOL_EXT},*.${ext}))"
-	${QUIET}echo "  DBDS             (*.dbd)"
-	${QUIET}echo "  EXCLUDE_VERSIONS () [versions not to build, e.g. 3.14]"
-	${QUIET}echo "  EXCLUDE_ARCHS    () [target architectures not to build, e.g. eldk]"
-	${QUIET}echo "  BUILDCLASSES     (Linux)"
-
-version:
-	${QUIET}echo ${LIBVERSION}
-
-debug: debug-out
-	${FOR_EACH_EPICS_VERSION}
-
-list:
-ifeq (${INSTALLED_MODULE_VERSIONS},)
-	${QUIET}echo -none-
-else
-	${QUIET}$(foreach v,${INSTALLED_MODULE_VERSIONS},\
-	    echo $v;)
-endif
-
-list-verbose:
-ifeq (${INSTALLED_MODULE_VERSIONS},)
-	${QUIET}echo -none-
-else
-	${QUIET}$(foreach v,${INSTALLED_MODULE_VERSIONS},\
-	    ls ${EPICS_MODULES_PATH}/${PRJ}/$v/*/lib/*/*.dep | sort | awk -F/ '{print "$v",$$7,$$9}' | column -t;)
-endif
-
-uninstall:
-ifeq (${INSTALLED_MODULE_VERSIONS},)
-	${QUIET}echo "This module is currently not installed."
-else
-	${QUIET}echo "Please choose version to uninstall from list: $(foreach v,${INSTALLED_MODULE_VERSIONS},uninstall.$v)"
-endif
-
-uninstall.%:
-	${QUIET}echo "Version is not installed: ${@:uninstall.%=%}"
-
-reinstall: build
-ifeq (${LIBVERSION},) # Do not reinstall without version.
-	$(error "Can't $@ if LIBVERSION is empty")
-endif
-	${PYTHON} ${MAKEHOME}/module_manager.py --assumeyes --builddir='${BUILD_PATH}' reinstall '${PRJ}' '${LIBVERSION}'
-
-define RE_UNINSTALLRULES_template
-uninstall.${1}:
-	${QUIET}echo Uninstalling ${1}
-	${PYTHON} ${MAKEHOME}/module_manager.py --assumeyes uninstall '${PRJ}' '${1}'
-reinstall.${1}: build
-	${QUIET}echo Reinstalling ${1}
-	${PYTHON} ${MAKEHOME}/module_manager.py --assumeyes --builddir='${BUILD_PATH}' reinstall '${PRJ}' '${1}'
-endef
-
-$(foreach v, ${INSTALLED_MODULE_VERSIONS},$(eval $(call RE_UNINSTALLRULES_template,$v)))
-
-# Make these variables available to subsequent runs (required to make vpath
-# work since include is before variable definitions in project Makefile).
-export PRJ
-export EXCLUDE_ARCHS
-export USR_DEPENDENCIES
-export DBDS
-export SOURCES
-export HEADERS
-export DOC
-export TESTS
-export OPIS
-export MISCS
-export EXCLUDE_VERSIONS
-export $(addprefix HEADERS_,${OS_CLASSES_SUFFIXES} ${EPICSVERSIONS_SUFFIXES})
-export $(addprefix SOURCES_,${OS_CLASSES_SUFFIXES} ${EPICSVERSIONS_SUFFIXES})
-
-
-else # EPICSVERSION
-###############################################
-# Second or third run
-# EPICSVERSION defined
-# second or third turn (see T_A branch below)
-
-EPICS_BASE=${EPICS_BASES_PATH}/base-${EPICSVERSION}
+#EPICS_BASE=${EPICS_BASES_PATH}/base-${EPICSVERSION}
 EPICS_MAJORMINOR=$(shell echo ${EPICSVERSION} | sed -r 's/^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)).*/\1/')
 
+# Sanity check:
 ${EPICS_BASE}/configure/CONFIG:
 	$(error "EPICS release ${EPICSVERSION} not installed on this host. File $@ doesn't exist")
 
@@ -469,26 +303,20 @@ OPI_FILES_INT = $(foreach v,${OPIS},$(if $(shell test -f $v && echo "Y"),$v))
 OPIS_INT_RELPATH = $(foreach opidir,${OPI_DIRS_INT},$(patsubst $(opidir)/%,%,$(shell find $(opidir) -type f)))
 OPIS_INT         = $(if $(strip ${OPIS}),${OPI_FILES_INT},${AUTOOPIS})
 
-BUILDDIRS = $(addprefix ${BUILD_PATH}/O.${EPICSVERSION}_, ${CROSS_COMPILER_TARGET_ARCHS})
-
-FOR_EACH_TARGET_ARCH = ${QUIET}for ARCH in ${CROSS_COMPILER_TARGET_ARCHS} ; do ${MAKE} -C ${BUILD_PATH}/O.${EPICSVERSION}_$$ARCH -f ../../${USERMAKEFILE} T_A=$$ARCH $@; done
+FOR_EACH_TARGET_ARCH = ${QUIET}for ARCH in ${CROSS_COMPILER_TARGET_ARCHS} ; do ${MAKE} -C ${BUILD_PATH}/O.$$ARCH -f ../../../${USERMAKEFILE} T_A=$$ARCH $@; done
 
 define OPLACEHOLDER_template
-.PHONY: $${BUILD_PATH}/O.$${EPICSVERSION}_$1
+.PHONY: $${BUILD_PATH}/O.$1
 
-$${BUILD_PATH}/O.$${EPICSVERSION}_$1:
+$${BUILD_PATH}/O.$1:
 	$${MKDIR} -p $$@
-	$${MAKE} -C $$@ -f ../../$${USERMAKEFILE} T_A=$1
+	$${MAKE} -C $$@ -f ../../../$${USERMAKEFILE} T_A=$1 build
 endef
 
 $(foreach arch,${CROSS_COMPILER_TARGET_ARCHS},$(eval $(call OPLACEHOLDER_template,${arch})))
 
 
-build: | $(foreach arch,${CROSS_COMPILER_TARGET_ARCHS},${BUILD_PATH}/O.${EPICSVERSION}_${arch})
-
-debug: debug-out
-	${QUIET}${MKDIR} -p ${BUILDDIRS}
-	${FOR_EACH_TARGET_ARCH}
+build: | $(foreach arch,${CROSS_COMPILER_TARGET_ARCHS},${BUILD_PATH}/O.${arch})
 
 export RECORDS
 export HEADERS
@@ -517,40 +345,41 @@ else # T_A
 # Third run, Target Architecture defined.
 # Executed in O.* directory.
 
-ifeq ($(filter ${OS_CLASS},${BUILDCLASSES}),)
-
-install%: build
-install:  build
-build%:   build
-build:
-	${QUIET}echo Skipping ${T_A} because $(if ${OS_CLASS},${OS_CLASS} is not in BUILDCLASSES = ${BUILDCLASSES},it is not available for R$(EPICSVERSION).)
-%:
-	${QUIET}true
-
-else ifeq ($(wildcard $(firstword ${CC})),)
-
-install%: build
-install:  build
-build%:   build
-build:
-	${QUIET}echo Warning: Skipping ${T_A} because cross compiler $(firstword ${CC}) is not installed.
-%:
-	${QUIET}true
-
-else
+#ifeq ($(filter ${OS_CLASS},${BUILDCLASSES}),)
+#
+#install%: build
+#install:  build
+#build%:   build
+#build:
+#	${QUIET}echo Skipping ${T_A} because $(if ${OS_CLASS},${OS_CLASS} is not in BUILDCLASSES = ${BUILDCLASSES},it is not available for R$(EPICSVERSION).)
+#%:
+#	${QUIET}true
+#
+#else ifeq ($(wildcard $(firstword ${CC})),)
+#
+#install%: build
+#install:  build
+#build%:   build
+#build:
+#	${QUIET}echo Warning: Skipping ${T_A} because cross compiler $(firstword ${CC}) is not installed.
+#%:
+#	${QUIET}true
+#
+#else
 
 V           = BUILDCLASSES OS_CLASS T_A ARCH_PARTS PRJDBD RECORDS MENUS BPTS HDRS SOURCES SOURCES_${EPICS_MAJORMINOR} SOURCES_${EPICSVERSION} SOURCES_${OS_CLASS} SRCS LIBOBJS DBDS DBDFILES LIBVERSION TESTVERSION PRJTMPLS PRJSTARTUPS OPIS
-BUILD_PATH := ../../${BUILD_DIR}
+TOP_PATH   := ../../..
+BUILD_PATH := ${TOP_PATH}/${BUILD_DIR}
 #COMMON_DIR  = ${BUILD_PATH}/include/O.${EPICSVERSION}_Common
-PROJECTDEP  = ${BUILD_PATH}/${EPICSVERSION}/lib/${T_A}/${PRJ}.dep
-PROJECTLIB  = $(if $(strip ${LIBOBJS}),${BUILD_PATH}/${EPICSVERSION}/lib/${T_A}/${LIB_PREFIX}${PRJ}${SHRLIB_SUFFIX})
+#PROJECTDEP  = ${BUILD_PATH}/${EPICSVERSION}/lib/${T_A}/${PROJECT}.dep
+PROJECTLIB  = $(if $(strip ${LIBOBJS}),${BUILD_PATH}/lib/${T_A}/${LIB_PREFIX}${PROJECT}${SHRLIB_SUFFIX})
 
-PRJDBD         = $(if $(strip ${DBDFILES}),${BUILD_PATH}/${EPICSVERSION}/dbd/${PRJ}.dbd)
+PRJDBD         = $(if $(strip ${DBDFILES}),${BUILD_PATH}/dbd/${PROJECT}.dbd)
 PRJTMPLS       = $(addprefix ${BUILD_PATH}/db/,$(notdir ${TMPLS}))
 PRJSUBS        = $(addprefix ${BUILD_PATH}/db/,$(notdir ${SUBS}))
-PRJEXECUTABLES = $(addprefix ${BUILD_PATH}/${EPICSVERSION}/bin/${T_A}/,$(notdir ${EXECUTABLES}))
-HDRS           = $(addprefix ${BUILD_PATH}/${EPICSVERSION}/include/${HEADERS_PREFIX},$(addsuffix Record.h,${RECORDS}) $(sort $(notdir ${MENUS} ${HEADERS})))
-OSHDRS         = $(addprefix ${BUILD_PATH}/${EPICSVERSION}/include/os/, \
+PRJEXECUTABLES = $(addprefix ${BUILD_PATH}/bin/${T_A}/,$(notdir ${EXECUTABLES}))
+HDRS           = $(addprefix ${BUILD_PATH}/include/${HEADERS_PREFIX},$(addsuffix Record.h,${RECORDS}) $(sort $(notdir ${MENUS} ${HEADERS})))
+OSHDRS         = $(addprefix ${BUILD_PATH}/include/os/, \
                      $(foreach osclass,$(strip ${OS_CLASSES_SUFFIXES}),$(addprefix ${osclass}/,$(notdir ${HEADERS_${osclass}}))))
 PRJMSCS        = $(addprefix ${BUILD_PATH}/misc/,$(notdir ${MSCS}))
 PRJDOC         = $(addprefix ${BUILD_PATH}/doc/,$(notdir ${DOC_FILES_INT}) ${DOC_INT_RELPATH})
@@ -567,7 +396,7 @@ PRODUCT_OBJS  = ${LIBOBJS}
 LIBS      = -L ${EPICS_BASE_LIB} ${BASELIBS:%=-l%}
 LINK.cpp += ${LIBS}
 
-LOADABLE_LIBRARY = $(if $(strip ${LIBOBJS}),${PRJ}${LIBVERSIONSTR})
+LOADABLE_LIBRARY = $(if $(strip ${LIBOBJS}),${PROJECT}${LIBVERSIONSTR})
 LIBRARY_OBJS     = ${LIBOBJS}
 
 BASERULES = ${EPICS_BASE}/configure/RULES_BUILD
@@ -592,7 +421,7 @@ CPPFLAGS += -MMD
 endif
 
 # Assume that dependant DBDs are in any source directory.
-DBDDIRS        = $(sort $(dir ${DBDFILES:%=../../%} ${SRCS:%=../../%}))
+DBDDIRS        = $(sort $(dir ${DBDFILES:%=${TOP_PATH}/%} ${SRCS:%=${TOP_PATH}/%}))
 DBDDIRS       += ${SHARED_DBD} ${EPICS_BASE}/dbd/
 DBDEXPANDPATH  = $(addprefix -I ,${DBDDIRS})
 USR_DBDFLAGS  += $(DBDEXPANDPATH)
@@ -600,41 +429,41 @@ USR_DBDFLAGS  += $(DBDEXPANDPATH)
 DBDFILES += ${SUBFUNCFILE}
 
 # We cannot use ${INCLUDES} since it contains dependencies. This is a copy of ${INCLUDES} from base/configure/CONFIG_COMMON.
-COMPLETEDEP_INCLUDES = -I. $(SRC_INCLUDES) $(INSTALL_INCLUDES) $(RELEASE_INCLUDES)\
-  $(TARGET_INCLUDES) $(USR_INCLUDES) $(CMD_INCLUDES) $(OP_SYS_INCLUDES)\
-  $($(BUILD_CLASS)_INCLUDES)
+#COMPLETEDEP_INCLUDES = -I. $(SRC_INCLUDES) $(INSTALL_INCLUDES) $(RELEASE_INCLUDES)\
+#  $(TARGET_INCLUDES) $(USR_INCLUDES) $(CMD_INCLUDES) $(OP_SYS_INCLUDES)\
+#  $($(BUILD_CLASS)_INCLUDES)
 
 # Complete dependency files (filter out -MMD since we use a different set of dep flags), used by get_prerequisites.py to determine EPICS modules dependencies.
-define COMPLETEDEP_template
-%.dc: %.$1
-	$$(CPP) $$(filter-out -MMD,$$(CPPFLAGS)) $$(COMPLETEDEP_INCLUDES) -M -MG -MF $$@ $$^
-endef
+#define COMPLETEDEP_template
+#%.dc: %.$1
+#	$$(CPP) $$(filter-out -MMD,$$(CPPFLAGS)) $$(COMPLETEDEP_INCLUDES) -M -MG -MF $$@ $$^
+#endef
 
-$(foreach ext,$(filter-out st stt gt,${SOURCE_EXT}),$(eval $(call COMPLETEDEP_template,${ext})))
+#$(foreach ext,$(filter-out st stt gt,${SOURCE_EXT}),$(eval $(call COMPLETEDEP_template,${ext})))
 
-COMPLETEDEPS = $(foreach ext,${SOURCE_EXT},$(patsubst %.${ext},%.dc,$(filter %.${ext},$(notdir ${SRCS}))))
+#COMPLETEDEPS = $(foreach ext,${SOURCE_EXT},$(patsubst %.${ext},%.dc,$(filter %.${ext},$(notdir ${SRCS}))))
 
-GETPREREQUISITES_FLAGS = $(addprefix -D,${COMPLETEDEPS}) \
-                         $(addprefix -T,$(addprefix ../db/,$(notdir ${TMPLS}))) \
-                         $(addprefix -S../../,${SUBS}) $(if ${USR_DEPENDENCIES}, \
-                           $(addprefix --user-dependency=,$(sort ${USR_DEPENDENCIES}))) \
-                         '${PRJ}' '${EPICSVERSION}' '${T_A}' '${OS_CLASS}'
+#GETPREREQUISITES_FLAGS = $(addprefix -D,${COMPLETEDEPS}) \
+#                         $(addprefix -T,$(addprefix ../db/,$(notdir ${TMPLS}))) \
+#                         $(addprefix -S../../,${SUBS}) $(if ${USR_DEPENDENCIES}, \
+#                           $(addprefix --user-dependency=,$(sort ${USR_DEPENDENCIES}))) \
+#                         '${PROJECT}' '${EPICSVERSION}' '${T_A}' '${OS_CLASS}'
 
-.dependencies_includes: ${OSHDRS} ${HDRS} ${COMPLETEDEPS}
-	${QUIET}echo "Looking up dependencies"
-	${QUIET}${GETPREREQUISITES} --make --recursive ${GETPREREQUISITES_FLAGS} > .dependencies_includes
+#.dependencies_includes: ${OSHDRS} ${HDRS} ${COMPLETEDEPS}
+#	${QUIET}echo "Looking up dependencies"
+#	${QUIET}${GETPREREQUISITES} --make --recursive ${GETPREREQUISITES_FLAGS} > .dependencies_includes
+#
+#-include .dependencies_includes
 
--include .dependencies_includes
-
-INCLUDES += ${DEPENDENCIES_INCLUDES}
+#INCLUDES += ${DEPENDENCIES_INCLUDES}
 
 
-SRC_INCLUDES = $(sort $(addprefix -I, ${BUILD_PATH}/${EPICSVERSION}/include ${BUILD_PATH}/${EPICSVERSION}/include/os/${OS_CLASS} $(dir ${SRCS:%=../../%} ${HEADERS:%=../../%} ${HEADERS_${OS_CLASS}:%=../../%} ${HEADERS_default:%=../../%} ${HDRS})))
+SRC_INCLUDES = $(sort $(addprefix -I, ${BUILD_PATH}/include ${BUILD_PATH}/include/os/${OS_CLASS} $(dir ${SRCS:%=${TOP_PATH}/%} ${HEADERS:%=${TOP_PATH}/%} ${HEADERS_${OS_CLASS}:%=${TOP_PATH}/%} ${HEADERS_default:%=${TOP_PATH}/%} ${HDRS})))
 
 SNC        = ${SNCSEQ}/${EPICSVERSION}/bin/$(EPICS_HOST_ARCH)/snc
 SNC_CFLAGS = -I ${SNCSEQ}/${EPICSVERSION}/include
 
-${BUILD_PATH}/${EPICSVERSION}/lib/${T_A}/%.so: %.so
+${BUILD_PATH}/lib/${T_A}/%.so: %.so
 	${QUIET}${INSTALL} -d -m 0644 $< $(@D)
 
 build: ${PRJDBD} ${OSHDRS} ${HDRS} ${COMPLETEDEPS} ${PRJTMPLS} ${PRJSUBS} ${PROJECTDEP} ${PRJMSCS} ${PROJECTLIB} ${PRJEXECUTABLES} ${PRJDOC} ${PRJTESTS} ${PRJSTARTUPS} ${PRJOPIS}
@@ -686,9 +515,9 @@ endif
 # Redefine MSI with full path.
 MSI=${EPICS_BASE_HOST_BIN}/msi
 
-DBFLAGS_DEPENDENCY := $(shell ${GETPREREQUISITES} --dbflags ${GETPREREQUISITES_FLAGS})
+#DBFLAGS_DEPENDENCY := $(shell ${GETPREREQUISITES} --dbflags ${GETPREREQUISITES_FLAGS})
 
-USR_DBFLAGS += $(addprefix -I,$(sort $(dir ${TMPLS:%=../../%}))) ${DBFLAGS_DEPENDENCY}
+USR_DBFLAGS += $(addprefix -I,$(sort $(dir ${TMPLS:%=${TOP_PATH}/%}))) ${DBFLAGS_DEPENDENCY}
 
 # MSI has different calling syntax on 3.14 and 3.15. The 3.15 version also knows how
 # to generate Make dependency files.
@@ -720,7 +549,7 @@ else
   -include *.d
 endif
 
-${BUILD_PATH}/${EPICSVERSION}/bin/${T_A}/%: %
+${BUILD_PATH}/bin/${T_A}/%: %
 	${QUIET}${MKDIR} -p ${@D}
 	${QUIET}echo "Copying executable $@"
 	${QUIET}$(CP) $< $@
@@ -739,20 +568,20 @@ INSTALL_LOADABLE_SHRLIBS=
 include ${BASERULES}
 
 # The VPATHs are being cleared out in BASERULES. It is important to load them _after_ including BASERULES.
-VPATH_HEADERS = $(addprefix ../../,$(dir $(filter-out /%,${HEADERS}))) $(dir $(filter /%,${HEADERS})) $(realpath $(addprefix ../../,$(addsuffix ..,$(dir $(foreach osclass,$(strip ${OS_CLASSES_SUFFIXES}),${HEADERS_${osclass}})))))
-vpath %     ../.. $(addprefix ../../,$(sort $(dir $(OPIS_INT)) ${OPI_DIRS_INT})) $(addprefix ../../,${DOC_DIRS_INT} $(dir ${EXECUTABLES} ${SRCS} ${DOC_FILES_INT} ${TESTS} ${MISCS}))
+VPATH_HEADERS = $(addprefix ${TOP_PATH}/,$(dir $(filter-out /%,${HEADERS}))) $(dir $(filter /%,${HEADERS})) $(realpath $(addprefix ${TOP_PATH}/,$(addsuffix ..,$(dir $(foreach osclass,$(strip ${OS_CLASSES_SUFFIXES}),${HEADERS_${osclass}})))))
+vpath %     ${TOP_PATH} $(addprefix ${TOP_PATH}/,$(sort $(dir $(OPIS_INT)) ${OPI_DIRS_INT})) $(addprefix ${TOP_PATH}/,${DOC_DIRS_INT} $(dir ${EXECUTABLES} ${SRCS} ${DOC_FILES_INT} ${TESTS} ${MISCS}))
 vpath %.h   ${VPATH_HEADERS}
 vpath %.hpp ${VPATH_HEADERS}
-vpath %.dbd $(addprefix ../../,$(sort $(dir ${DBDFILES} ${MENUS})))
+vpath %.dbd $(addprefix ${TOP_PATH}/,$(sort $(dir ${DBDFILES} ${MENUS})))
 
 $(foreach ext,${TEMPLATE_EXT},\
-  $(eval vpath %.${ext} $$(addprefix ../../,$$(dir $${TMPLS}))))
+  $(eval vpath %.${ext} $$(addprefix ${TOP_PATH}/,$$(dir $${TMPLS}))))
 $(foreach ext,${SUBSTITUTIONS_EXT},\
-  $(eval vpath %.${ext} $$(addprefix ../../,$$(dir $${TMPLS} $${SUBS}))))
+  $(eval vpath %.${ext} $$(addprefix ${TOP_PATH}/,$$(dir $${TMPLS} $${SUBS}))))
 $(foreach ext,${PROTOCOL_EXT},\
-  $(eval vpath %.${ext} $$(addprefix ../../,$$(dir $${MSCS}))))
+  $(eval vpath %.${ext} $$(addprefix ${TOP_PATH}/,$$(dir $${MSCS}))))
 $(foreach ext,${STARTUP_EXT},\
-  $(eval vpath %.${ext} $$(addprefix ../../,$$(dir $${STARTUPS_INT}))))
+  $(eval vpath %.${ext} $$(addprefix ${TOP_PATH}/,$$(dir $${STARTUPS_INT}))))
 
 # Disable header install rule (RULES_BUILD:451) so that local header files won't override EPICS BASE header files
 $(INSTALL_INCLUDE)/% : %
@@ -822,9 +651,9 @@ ${SUBFUNCFILE}: $(filter %.c %.C %.cc %.cpp, $(SRCS))
 ${VERSIONFILE}:
 	${QUIET}echo Generating $@
 ifneq (${TESTVERSION},)
-	${QUIET}echo "double epics_${PRJ}LibVersion = ${MAJOR}.${MINOR};" > $@
+	${QUIET}echo "double epics_${PROJECT}LibVersion = ${MAJOR}.${MINOR};" > $@
 endif
-	${QUIET}echo "char epics_${PRJ}LibRelease[] = \"${LIBVERSION}\";" >> $@
+	${QUIET}echo "char epics_${PROJECT}LibRelease[] = \"${LIBVERSION}\";" >> $@
 
 # EPICS 3.14+:
 # Create file to fill registry from dbd file. Remove the call to iocshRegisterCommon because it is already called in softIoc.
@@ -841,20 +670,20 @@ ${REGISTRYFILE}: ${PRJDBD}
 	${QUIET}cat $@.tmp | grep -v iocshRegisterCommon > $@
 endif
 
-${BUILD_PATH}/${EPICSVERSION}/include/${HEADERS_PREFIX}%.hpp: %.hpp
+${BUILD_PATH}/include/${HEADERS_PREFIX}%.hpp: %.hpp
 	${QUIET}echo "Copying $< $(@D)"
 	${QUIET}$(INSTALL) -d -m 0644 $< $(@D)
 
-${BUILD_PATH}/${EPICSVERSION}/include/${HEADERS_PREFIX}%.h: %.h
+${BUILD_PATH}/include/${HEADERS_PREFIX}%.h: %.h
 	${QUIET}echo "Copying $< $(@D)"
 	${QUIET}$(INSTALL) -d -m 0644 $< $(@D)
 
 define OS_SPECIFIC_HEADERS_template =
-$${BUILD_PATH}/$${EPICSVERSION}/include/os/${1}/%.hpp: ${1}/%.hpp
+$${BUILD_PATH}/include/os/${1}/%.hpp: ${1}/%.hpp
 	$${QUIET}echo "Copying $$< $$(@D)"
 	$${QUIET}$$(INSTALL) -d -m 0644 $$< $$(@D)
 
-$${BUILD_PATH}/$${EPICSVERSION}/include/os/${1}/%.h: ${1}/%.h
+$${BUILD_PATH}/include/os/${1}/%.h: ${1}/%.h
 	$${QUIET}echo "Copying $$< $$(@D)"
 	$${QUIET}$$(INSTALL) -d -m 0644 $$< $$(@D)
 endef
@@ -873,19 +702,18 @@ LSUFFIX_YES=$(SHRLIB_SUFFIX)
 LSUFFIX_NO=$(LIB_SUFFIX)
 LSUFFIX=$(LSUFFIX_$(SHARED_LIBRARIES))
 
-DEPENDENCIES = $(shell ${GETPREREQUISITES} ${GETPREREQUISITES_FLAGS})
+#DEPENDENCIES = $(shell ${GETPREREQUISITES} ${GETPREREQUISITES_FLAGS})
 
 # Create dependency file for recursive requires
-${PROJECTDEP}: ${LIBOBJS}
-	${QUIET}${MKDIR} -p $(dir ${PROJECTDEP})
-	${QUIET}echo "Collecting dependencies to $@"
-	${QUIET}$(RM) $@
-	${QUIET}echo "# Generated file. Do not edit." > $@
-	${QUIET}for dep in ${DEPENDENCIES} ; do echo $$dep >> $@; done; true
+#${PROJECTDEP}: ${LIBOBJS}
+#	${QUIET}${MKDIR} -p $(dir ${PROJECTDEP})
+#	${QUIET}echo "Collecting dependencies to $@"
+#	${QUIET}$(RM) $@
+#	${QUIET}echo "# Generated file. Do not edit." > $@
+#	${QUIET}for dep in ${DEPENDENCIES} ; do echo $$dep >> $@; done; true
 
 endif # T_A defined
-endif # OS_CLASS in BUILDCLASSES
-endif # EPICSVERSION defined
+#endif # OS_CLASS in BUILDCLASSES
 
 # Cancel implicit rules for source control systems we don't use.
 %:: s.%
